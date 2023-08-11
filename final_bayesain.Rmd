@@ -1,0 +1,664 @@
+---
+title: "Supplementary Document: (Appendix 1)"
+author: "Kemal Sherefa,Mohammed Bheser, Nahom Alemseged"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    df_print: paged
+  tufte::tufte_handout:
+    latex_engine: xelatex
+  pdf_document:
+    latex_engine: xelatex
+---
+
+# author:
+
+#### " date: "2023-06-08" output: html_document ---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(rethinking)
+library(rjags)
+library(tidyverse)
+library(dplyr)
+source('functions.R')
+df_1 <- read_csv('ACR data.csv')
+head(df)
+```
+
+We select and rename the data as follows
+
+```{r}
+df <- df_1[c('Gendercode','RIDAGEYR','Black','BMXBMI','Hypertension','Diabetes','URDACT','Qurtiles','DXXOFBMD','LSBMD','DXXNKBMD')]
+df <- df %>%
+  rename("sex" = "Gendercode",
+         "age" = "RIDAGEYR",
+         "bmi" = "BMXBMI",
+         "act" = "URDACT",
+         "tot_femur" = "DXXOFBMD",
+         "lum_spine" = "LSBMD",
+         "femur_neck" = "DXXNKBMD")
+```
+
+For our analysis, we have three groups (sets) of outcomes which are, Femoral neck, Total femur and Lumbar spine.
+
+```{r}
+y_tot <- df['tot_femur']
+y_lum <- df['lum_spine']
+y_fem <- df['femur_neck']
+```
+
+Selecting our input variables.
+
+```{r}
+x <- df[c("sex","age", "Black","bmi","Hypertension","Diabetes", "act","Qurtiles")]
+x_nq <- df[c("sex","age", "Black","bmi","Hypertension","Diabetes", "act")]
+x_q <- x[c("sex","age", "Black","bmi","Hypertension","Diabetes", "Qurtiles")]
+```
+
+We first need to do a prior predicitive check using the following codes.
+
+```{r}
+nsim <- 200
+beta_sex <- rnorm(nsim, mean= 0, sd = 0.1)
+beta_age <- rnorm(nsim, mean= 0, sd = 0.1)
+beta_hyper <- rnorm(nsim, mean= 0, sd = 0.1)
+beta_act <- rnorm(nsim, mean= 0, sd = 0.1)
+alpha <- rnorm(nsim, mean= 0, sd = 0.1)
+sigma <- runif(nsim, 0, 0.1)
+x <- log(df$act)
+y <- standardize(df$tot_femur)
+curve(expr = alpha[1]+ beta_act[1]*x, ylim = c(-1, 1), xlim = c(-5,5))
+  for(j in 1:200){
+    curve(expr = alpha[j]+ beta_act[j] * x, add= T)
+  }
+```
+
+This looks good. we can see the density overlay for the prior predictive values as follows.
+
+```{r}
+
+prior_dens <- function(a,b,sigma,nsim,x, xbar,d){
+  yprior <- sapply(1:nrow(d), function(i) rnorm(nsim, mean = a + b*(x[i] - xbar), sd = sigma))
+  dens(yprior[1,], adj =1, col = "lightblue", ylim = c(0, 6), xlim = c(-5, 5))
+  for(i in 1:nsim){
+    dens(yprior[i,], adj =1, col = "lightblue", add = T)
+  }
+}
+
+prior_dens(a= alpha, b = beta_act, nsim = 200, d = df, x = df$act, sigma = sigma, xbar = mean(log(df$act)))
+```
+
+we can now preceed to building our model as follows. But first, we need to center the continuous variables that convergence be simpler.
+
+```{r}
+df$bmi_st <- df$bmi - mean(df$bmi)
+df$age_st <-  df$age - mean(df$age)
+df$act_st <- log(df$act)
+df$black_ <- factor(df$Black)
+```
+
+We now build our model as follows.
+
+## Section 1: Adjusted model with other covariates to control.
+
+## Part 1) Modeling Total femur
+
+Let us first build our model.
+
+```{r}
+
+model_jags1 <- "model {
+  # likelihood
+  for (i in 1:n) {
+    #likelihood
+    B[i] ~ dnorm(mu[i], sigma)
+    mu[i] <- alpha + beta_sex * sex[i] + beta_age * age[i] + beta_black * black[i] + beta_bmi * bmi[i] + beta_hyper * Hypertension[i] + beta_diab * Diabetes[i] +  beta_act * act[i]
+    #posterior
+    ynew[i] ~ dnorm(mu[i], sigma)
+    }
+
+  # priors
+  alpha ~ dnorm(0, pow(0.1, -2))
+  beta_sex ~ dnorm(0, pow(0.1, -2))
+  beta_age ~ dnorm(0, pow(0.1, -2))
+  beta_black ~ dnorm(0, pow(0.1, -2))
+  beta_bmi ~ dnorm(0, pow(0.1, -2))
+  beta_hyper ~ dnorm(0, pow(0.1, -2))
+  beta_diab ~ dnorm(0, pow(0.1, -2))
+  beta_act ~ dnorm(0, pow(0.1, -2))
+  sigma ~ dexp(1)
+}
+"
+m1 <- jags.model(file = textConnection(model_jags1),
+                 data = list(B = df$tot_femur,
+                             sex = df$sex,
+                             age = df$age_st,
+                             black = df$Black,
+                             bmi = df$bmi_st,
+                             Hypertension = df$Hypertension,
+                             Diabetes = df$Diabetes,
+                             act = df$act_st,
+                             n = nrow(df)),
+                              n.chains = 4)
+```
+
+Drawing samples can be found using the following code.
+
+```{r}
+samps <- coda.samples(m1,
+                      variable.names = c("beta_sex",
+                                         "beta_age",
+                                         "beta_black",
+                                         "beta_bmi",
+                                         "beta_hyper",
+                                         "beta_diab",
+                                         "beta_act"), n.iter = 1e3)
+```
+
+The 95 percent Credible interval looks like the following using the precis function in the rethinking package.
+
+```{r}
+precis(as.data.frame(samps[[1]]), depth = 2, prob = 0.95, digits = 4)
+```
+
+We can see that there is found to be zero (no) association between beta_act and the outcome.
+
+We can increase the number of burn in iterations to be 1e4.
+
+```{r}
+update(m1, n.iter = 1e4)
+```
+
+```{r}
+samps <- coda.samples(m1,variable.names = c("beta_sex",
+                                            "beta_age",
+                                            "beta_black",
+                                            "beta_bmi",
+                                            "beta_hyper",
+                                            "beta_diab",
+                                            "beta_act"), n.iter = 3e4)
+```
+
+```{r}
+plot(samps)
+```
+
+we could see that the trace plot looks well mixed according to the trace plot and does not indicate many problem. We can also look at the Gelman Rubin's diagnostic checks for convergence using the following code.
+
+```{r}
+gelman.diag(samps)
+```
+
+The Gelman Rubin's dignostic check compares the within and between chains to check for convergence. As the values are close to one, we can see that the diagnostic is fine. The effective sample size is viewed as follows.
+
+```{r}
+effectiveSize(samps)
+```
+
+we can say that we are getting a fairly good effective sample size.
+
+```{r}
+ preds <- jags.samples(model = m1,
+                        variable.names = c("mu", "ynew"),
+                        n.iter = 1e3)
+```
+
+```{r}
+y <- df$tot_femur
+dens <- density(y)
+plot.new()
+dens(y, adj= 1, ylim = c(0,(max(y)) *2))
+  for(j in 1:400){
+    dens(preds$ynew[,j,], adj= 1, col = alpha("lightblue", alpha = 0.5), add=T)
+  }
+
+```
+
+## Part 2) Modeling Femoral neck (\*)
+
+Let us first build our model using Femoral neck as a response variable.
+
+```{r}
+
+model_jags1 <- "model {
+  # likelihood
+  for (i in 1:n) {
+    #likelihood
+    B[i] ~ dnorm(mu[i], sigma)
+    mu[i] <- alpha + beta_sex * sex[i] + beta_age * age[i] + beta_black * black[i] + beta_bmi * bmi[i] + beta_hyper * Hypertension[i] + beta_diab * Diabetes[i] +  beta_act * act[i]
+    #posterior
+    ynew[i] ~ dnorm(mu[i], sigma)
+    }
+
+  # priors
+  alpha ~ dnorm(0, pow(0.1, -2))
+  beta_sex ~ dnorm(0, pow(0.1, -2))
+  beta_age ~ dnorm(0, pow(0.1, -2))
+  beta_black ~ dnorm(0, pow(0.1, -2))
+  beta_bmi ~ dnorm(0, pow(0.1, -2))
+  beta_hyper ~ dnorm(0, pow(0.1, -2))
+  beta_diab ~ dnorm(0, pow(0.1, -2))
+  beta_act ~ dnorm(0, pow(0.1, -2))
+  sigma ~ dexp(1)
+}
+"
+m1 <- jags.model(file = textConnection(model_jags1),
+                 data = list(B = df$femur_neck,
+                             sex = df$sex,
+                             age = df$age_st,
+                             black = df$Black,
+                             bmi = df$bmi_st,
+                             Hypertension = df$Hypertension,
+                             Diabetes = df$Diabetes,
+                             act = df$act_st,
+                             n = nrow(df)),
+                              n.chains = 4)
+```
+
+Drawing samples can be found using the following code.
+
+```{r}
+samps <- coda.samples(m1,
+                      variable.names = c("beta_sex",
+                                         "beta_age",
+                                         "beta_black",
+                                         "beta_bmi",
+                                         "beta_hyper",
+                                         "beta_diab",
+                                         "beta_act"), n.iter = 1e4)
+```
+
+The 95 percent Credible interval looks like the following using the precis function in the rethinking package.
+
+```{r}
+precis(as.data.frame(samps[[1]]), depth = 2, prob = 0.95, digits = 4 )
+```
+
+We can see that there is found to be zero (no) association between beta_act and the outcome.
+
+We can increase the number of burn in iterations to be 1e4.
+
+```{r}
+update(m1, n.iter = 1e4)
+```
+
+```{r}
+samps <- coda.samples(m1,variable.names = c("beta_sex",
+                                            "beta_age",
+                                            "beta_black",
+                                            "beta_bmi",
+                                            "beta_hyper",
+                                            "beta_diab",
+                                            "beta_act"), n.iter = 3e4)
+```
+
+```{r}
+plot(samps)
+```
+
+we could see that the trace plot looks well mixed according to the trace plot and does not indicate many problem. We can also look at the Gelman Rubin's diagnostic checks for convergence using the following code.
+
+```{r}
+gelman.diag(samps)
+```
+
+The Gelman Rubin's dignostic check compares the within and between chains to check for convergence. As the values are close to one, we can see that the diagnostic is fine. The effective sample size is viewed as follows.
+
+```{r}
+effectiveSize(samps)
+```
+
+We can say that we are getting a fairly good effective sample size.
+
+```{r}
+ preds <- jags.samples(model = m1,
+                        variable.names = c("mu", "ynew"),
+                        n.iter = 1e3)
+```
+
+```{r}
+y <- df$femur_neck
+dens <- density(y)
+plot.new()
+dens(y, adj= 1, ylim = c(0,(max(y)) *2))
+  for(j in 1:400){
+    dens(preds$ynew[,j,], adj= 1, col = alpha("lightblue", alpha = 0.5), add=T)
+  }
+
+```
+
+## Part 3) Modeling Lumber spline
+
+Let us first build our model using Femoral neck as a response variable.
+
+```{r}
+
+model_jags1 <- "model {
+  # likelihood
+  for (i in 1:n) {
+    #likelihood
+    B[i] ~ dnorm(mu[i], sigma)
+    mu[i] <- alpha + beta_sex * sex[i] + beta_age * age[i] + beta_black * black[i] + beta_bmi * bmi[i] + beta_hyper * Hypertension[i] + beta_diab * Diabetes[i] +  beta_act * act[i]
+    #posterior
+    ynew[i] ~ dnorm(mu[i], sigma)
+    }
+
+  # priors
+  alpha ~ dnorm(0, pow(0.1, -2))
+  beta_sex ~ dnorm(0, pow(0.1, -2))
+  beta_age ~ dnorm(0, pow(0.1, -2))
+  beta_black ~ dnorm(0, pow(0.1, -2))
+  beta_bmi ~ dnorm(0, pow(0.1, -2))
+  beta_hyper ~ dnorm(0, pow(0.1, -2))
+  beta_diab ~ dnorm(0, pow(0.1, -2))
+  beta_act ~ dnorm(0, pow(0.1, -2))
+  sigma ~ dexp(1)
+}
+"
+m1 <- jags.model(file = textConnection(model_jags1),
+                 data = list(B = df$lum_spine,
+                             sex = df$sex,
+                             age = df$age_st,
+                             black = df$Black,
+                             bmi = df$bmi_st,
+                             Hypertension = df$Hypertension,
+                             Diabetes = df$Diabetes,
+                             act = df$act_st,
+                             n = nrow(df)),
+                              n.chains = 4)
+```
+
+Drawing samples can be found using the following code.
+
+```{r}
+samps <- coda.samples(m1,
+                      variable.names = c("beta_sex",
+                                         "beta_age",
+                                         "beta_black",
+                                         "beta_bmi",
+                                         "beta_hyper",
+                                         "beta_diab",
+                                         "beta_act"), n.iter = 1e4)
+```
+
+The 95 percent Credible interval looks like the following using the precis function in the rethinking package.
+
+```{r}
+precis(as.data.frame(samps[[1]]), depth = 2, prob = 0.95, digits = 4 )
+```
+
+We can see that there is found to be zero (no) association between beta_act and the outcome.
+
+We can increase the number of burn in iterations to be 1e4.
+
+```{r}
+update(m1, n.iter = 1e4)
+```
+
+```{r}
+samps <- coda.samples(m1,variable.names = c("beta_sex",
+                                            "beta_age",
+                                            "beta_black",
+                                            "beta_bmi",
+                                            "beta_hyper",
+                                            "beta_diab",
+                                            "beta_act"), n.iter = 3e4)
+```
+
+```{r}
+plot(samps)
+```
+
+we could see that the trace plot looks well mixed according to the trace plot and does not indicate many problem. We can also look at the Gelman Rubin's diagnostic checks for convergence using the following code.
+
+```{r}
+gelman.diag(samps)
+```
+
+The Gelman Rubin's dignostic check compares the within and between chains to check for convergence. As the values are close to one, we can see that the diagnostic is fine. The effective sample size is viewed as follows.
+
+```{r}
+effectiveSize(samps)
+```
+
+we can say that we are getting a fairly good effective sample size.
+
+```{r}
+ preds <- jags.samples(model = m1,
+                        variable.names = c("mu", "ynew"),
+                        n.iter = 1e3)
+```
+
+```{r}
+y <- df$lum_spine
+dens <- density(y)
+plot.new()
+dens(y, adj= 1, ylim = c(0,(max(y)) *2))
+  for(j in 1:400){
+    dens(preds$ynew[,j,], adj= 1, col = alpha("lightblue", alpha = 0.5), add=T)
+  }
+
+```
+
+# Section 2: Unadjusted model with relation between exposure and outcome
+
+## Part 1) Modeling Total femur
+
+Let us first build our model.
+
+```{r}
+
+model_jags1 <- "model {
+  # likelihood
+  for (i in 1:n) {
+    #likelihood
+    B[i] ~ dnorm(mu[i], sigma)
+    mu[i] <- alpha + beta_act * act[i]
+    #posterior
+    ynew[i] ~ dnorm(mu[i], sigma)
+    }
+
+  # priors
+  alpha ~ dnorm(0, pow(0.1, -2))
+  beta_act ~ dnorm(0, pow(1, -2))
+  sigma ~ dexp(1)
+}
+"
+m1 <- jags.model(file = textConnection(model_jags1),
+                 data = list(B = df$tot_femur,
+                             act = df$act_st,
+                             n = nrow(df)),
+                              n.chains = 4)
+```
+
+Drawing samples can be found using the following code.
+
+```{r}
+samps <- coda.samples(m1,
+                      variable.names = c("beta_act"), n.iter = 1e4)
+```
+
+The 95 percent Credible interval looks like the following using the precis function in the rethinking package.
+
+```{r}
+precis(as.data.frame(samps[[1]]), depth = 2, prob = 0.95, digits = 4)
+```
+
+We can see that there is found to be zero (no) association between beta_act and the outcome.
+
+We can increase the number of burn in iterations to be 1e4.
+
+```{r}
+update(m1, n.iter = 1e4)
+```
+
+```{r}
+samps <- coda.samples(m1,variable.names = c("beta_act"), n.iter = 3e4)
+```
+
+```{r}
+plot(samps)
+```
+
+we could see that the trace plot looks well mixed according to the trace plot and does not indicate many problem. We can also look at the Gelman Rubin's diagnostic checks for convergence using the following code.
+
+```{r}
+gelman.diag(samps)
+```
+
+The Gelman Rubin's dignostic check compares the within and between chains to check for convergence. As the values are close to one, we can see that the diagnostic is fine. The effective sample size is viewed as follows.
+
+```{r}
+effectiveSize(samps)
+```
+
+we can say that we are getting a fairly good effective sample size.
+
+## Part 2) Modeling Femoral neck (\*)
+
+Let us first build our model using Femoral neck as a response variable.
+
+```{r}
+
+model_jags1 <- "model {
+  # likelihood
+  for (i in 1:n) {
+    #likelihood
+    B[i] ~ dnorm(mu[i], sigma)
+    mu[i] <- alpha +  beta_act * act[i]
+    #posterior
+    ynew[i] ~ dnorm(mu[i], sigma)
+    }
+
+  # priors
+  alpha ~ dnorm(1, pow(0.1, -2))
+  beta_act ~ dnorm(1, pow(1, -2))
+  sigma ~ dexp(1)
+}
+"
+m1 <- jags.model(file = textConnection(model_jags1),
+                 data = list(B = df$femur_neck,
+                             act = df$act_st,
+                             n = nrow(df)),
+                              n.chains = 4)
+```
+
+Drawing samples can be found using the following code.
+
+```{r}
+samps <- coda.samples(m1,
+                      variable.names = c("beta_act"), n.iter = 1e4)
+```
+
+The 95 percent Credible interval looks like the following using the precis function in the rethinking package.
+
+```{r}
+precis(as.data.frame(samps[[1]]), depth = 2, prob = 0.95, digits = 4 )
+```
+
+We can see that there is found to be zero (no) association between beta_act and the outcome.
+
+We can increase the number of burn in iterations to be 1e4.
+
+```{r}
+update(m1, n.iter = 1e4)
+```
+
+```{r}
+samps <- coda.samples(m1,variable.names = c("beta_act"), n.iter = 3e4)
+```
+
+```{r}
+plot(samps)
+```
+
+we could see that the trace plot looks well mixed according to the trace plot and does not indicate problem. We can also look at the Gelman Rubin's diagnostic checks for convergence using the following code.
+
+```{r}
+gelman.diag(samps)
+```
+
+The Gelman Rubin's dignostic check compares the within and between chains to check for convergence. As the values are close to one, we can see that the diagnostic is fine. The effective sample size is viewed as follows.
+
+```{r}
+effectiveSize(samps)
+```
+
+we can say that we are getting a fairly good effective sample size.
+
+## Part 3) Modeling Lumber spline
+
+Let us first build our model using Femoral neck as a response variable.
+
+```{r}
+
+model_jags1 <- "model {
+  # likelihood
+  for (i in 1:n) {
+    #likelihood
+    B[i] ~ dnorm(mu[i], sigma)
+    mu[i] <- alpha + beta_act * act[i]
+    #posterior
+    ynew[i] ~ dnorm(mu[i], sigma)
+    }
+
+  # priors
+  alpha ~ dnorm(0, pow(0.1, -2))
+  beta_act ~ dnorm(0, pow(0.1, -2))
+  sigma ~ dexp(1)
+}
+"
+m1 <- jags.model(file = textConnection(model_jags1),
+                 data = list(B = df$lum_spine,
+                             act = df$act_st,
+                             n = nrow(df)),
+                              n.chains = 4)
+```
+
+Drawing samples can be found using the following code.
+
+```{r}
+samps <- coda.samples(m1,
+                      variable.names = c("beta_act"), n.iter = 1e4)
+```
+
+The 95 percent Credible interval looks like the following using the precis function in the rethinking package.
+
+```{r}
+precis(as.data.frame(samps[[1]]), depth = 2, prob = 0.95, digits = 4 )
+```
+
+We can see that there is found to be zero (no) association between beta_act and the outcome.
+
+We can increase the number of burn in iterations to be 1e4.
+
+```{r}
+update(m1, n.iter = 1e4)
+```
+
+```{r}
+samps <- coda.samples(m1,variable.names = c("beta_act"), n.iter = 3e4)
+```
+
+```{r}
+plot(samps)
+```
+
+we could see that the trace plot looks well mixed according to the trace plot and does not indicate many problem. We can also look at the Gelman Rubin's diagnostic checks for convergence using the following code.
+
+```{r}
+gelman.diag(samps)
+```
+
+The Gelman Rubin's dignostic check compares the within and between chains to check for convergence. As the values are close to one, we can see that the diagnostic is fine. The effective sample size is viewed as follows.
+
+```{r}
+effectiveSize(samps)
+```
+
+we can say that we are getting a fairly good effective sample size.
